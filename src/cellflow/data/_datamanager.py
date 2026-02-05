@@ -92,15 +92,15 @@ class DataManager:
         primary_group: str | None = None,
     ):
         if primary_group is None:
-            self.primary_group, _ = next(iter(perturbation_covariates.items())) ## 用perturbation_covariates的第一个group作为primary perturbation
+            self.primary_group, _ = next(iter(perturbation_covariates.items())) ## Using the first group of perturbation_covariates as primary perturbation
         else:
             self.primary_group = primary_group
         self._adata = adata
-        self._sample_rep = sample_rep.copy() if isinstance(sample_rep, dict) else sample_rep ## 提取细胞表征信息
+        self._sample_rep = sample_rep.copy() if isinstance(sample_rep, dict) else sample_rep ## 
         self._sample_rep = self._verify_sample_rep(sample_rep)
-        self._control_key = control_key ## control，这里就是代表 `is_control` 一个布尔变量表示哪个属于perturb的
-        self._perturbation_covariates = OrderedDict(self._verify_perturbation_covariates(perturbation_covariates)) ## verify perturbation的covariates
-        self._perturbation_covariate_reps = OrderedDict( ## veryify perturbation embedding对不对
+        self._control_key = control_key ##  `is_control` a boolean variable indicating which cells belong to control
+        self._perturbation_covariates = OrderedDict(self._verify_perturbation_covariates(perturbation_covariates)) ## verify perturbation' covariates
+        self._perturbation_covariate_reps = OrderedDict( ## veryify if perturbation embedding is correct
             self._verify_perturbation_covariate_reps(
                 adata,
                 perturbation_covariate_reps,
@@ -115,31 +115,31 @@ class DataManager:
         )
         ##
 
-        self._sample_covariates = self._verify_sample_covariates(sample_covariates) ## verify sample level 的covariate对不对 这里要注意的是sample covariate就是obs的一个列名，但是perturbation covariate不是
-        self._sample_covariate_reps = self._verify_sample_covariate_reps( ## verify sample level的covariate对应的representation
+        self._sample_covariates = self._verify_sample_covariates(sample_covariates) 
+        self._sample_covariate_reps = self._verify_sample_covariate_reps( 
             adata, sample_covariate_reps, self._sample_covariates
         )
         self._split_covariates = self._verify_split_covariates(adata, split_covariates, control_key)
         self._max_combination_length = self._get_max_combination_length(
             self._perturbation_covariates, max_combination_length
-        ) # 设置组合长度最短不要短过 元素最多的perturb condition
+        ) 
         self._null_value = null_value
         self._primary_one_hot_encoder, self._is_categorical = self._get_primary_covar_encoder(
             self._adata,
             self._perturbation_covariates,
             self._perturbation_covariate_reps,
-        ) ## 通过one-hot encode或perturb condition本身的representation作为条件, 如果perturbation_covariate_reps本身就有self._primary_group，则不用one-hot encode
+        ) 
         self._linked_perturb_covars = self._get_linked_perturbation_covariates(
             self._perturbation_covariates, self.primary_group
-        ) ## 把primary group中各个条件塞到_linked_perturb_covars里面
+        ) 
         sample_cov_groups = OrderedDict({covar: _to_list(covar) for covar in self._sample_covariates}) 
-        covariate_groups = self._perturbation_covariates | sample_cov_groups ## 这一步把dictionary合并
+        covariate_groups = self._perturbation_covariates | sample_cov_groups
         self._covariate_reps = (self._perturbation_covariate_reps or {}) | (self._sample_covariate_reps or {})
         self._covar_to_idx = self._get_covar_to_idx(covariate_groups)  # type: ignore[arg-type]
         perturb_covar_keys = _flatten_list(self._perturbation_covariates.values()) + list(self._sample_covariates)
         perturb_covar_keys += [col for col in self._split_covariates if col not in perturb_covar_keys]
         self._perturb_covar_keys = [k for k in perturb_covar_keys if k is not None]
-        self.condition_keys = sorted(self._perturb_covar_keys) # 找到所有的key value，即obs中的元素
+        self.condition_keys = sorted(self._perturb_covar_keys)
         assert (len(self._perturbation_covariates) > 0) or (len(self._sample_covariates) > 0), (
             "At least one perturbation or sample covariate must be provided."
         )
@@ -408,7 +408,7 @@ class DataManager:
         -------
         Dictionary with perturbation covariate embeddings.
         """
-        perturb_covar_emb: dict[str, list[np.ndarray]] = {group: [] for group in perturb_covariates} ## 设置空的perturb embedding dict
+        perturb_covar_emb: dict[str, list[np.ndarray]] = {group: [] for group in perturb_covariates}
         primary_covars = perturb_covariates[primary_group] 
         for primary_cov in primary_covars:
             value = condition_data[primary_cov]
@@ -425,11 +425,11 @@ class DataManager:
                         np.array(cov_name).reshape(-1, 1)
                     )
                 )
-            ## 要么用已知的embedding，要么用one-hot encoding
+
 
             prim_arr2 = None
             if not is_categorical:
-                prim_arr2 = value * prim_arr1.copy() ## 用value来scalar perturbation embedding
+                prim_arr2 = value * prim_arr1.copy()
             else:
                 prim_arr2 = prim_arr1.copy()
 
@@ -539,21 +539,17 @@ class DataManager:
             perturbation_idx_to_covariates = (
                 df[["global_pert_mask", *all_combs_keys]].groupby(["global_pert_mask"]).first().to_dict(orient="index")
             )
-            ## 依据perturbed的index，生成一个dictionary，每个元素对应到一次扰动的组合（perturbation+sample）
 
             perturbation_idx_to_covariates = {
                 int(k): [v[s] for s in [*perturbation_covariates_keys, *uniq_sample_keys]]
                 for k, v in perturbation_idx_to_covariates.items()
             }
-            ## clean up: 只保留扰动的信息（key里面的数值），每个dict里面是一个string，先试扰动后是sample
 
             perturbation_covariates_to_idx = {tuple(v): k for k, v in perturbation_idx_to_covariates.items()}
-            ## 确认每个perturbation属于的index
 
             control_to_perturbation = (
                 df[~df[self.control_key]].groupby(["global_control_mask"])["global_pert_mask"].unique()
             )
-            ## control index对应的perturbation index
 
             control_to_perturbation = control_to_perturbation.to_dict()
             control_to_perturbation = {
@@ -618,8 +614,7 @@ class DataManager:
             self._verify_covariate_data(covariate_data, self.pheno_covariates)
 
         # extract unique combinations of perturbation covariates
-        perturb_covar_df = DataManager._get_perturb_covar_df(covariate_data, self.perturb_covar_keys, condition_id_key) ## 生成包含所有covariate的data.frame且第一列为index
-        ## 这里的perturb_covar_keys应该还要包含pheno_group的key values
+        perturb_covar_df = DataManager._get_perturb_covar_df(covariate_data, self.perturb_covar_keys, condition_id_key)
 
         covariate_data = covariate_data.copy()
         covariate_data["cell_index"] = covariate_data.index
@@ -633,17 +628,17 @@ class DataManager:
         if len(self.pheno_covariates) > 0:
             pheno_keys = self.pheno_covariates
 
-        perturbation_covariates_keys = [key for key in self.perturb_covar_keys if key not in uniq_sample_keys] ## 抽取perturbation covariate相关的key值
+        perturbation_covariates_keys = [key for key in self.perturb_covar_keys if key not in uniq_sample_keys] 
 
-        all_combs_keys = uniq_sample_keys + perturbation_covariates_keys ## 得到所有的key值，先是sample然后是perturbation
+        all_combs_keys = uniq_sample_keys + perturbation_covariates_keys
         if len(self.split_covariates) == 0:
-            all_combs_keys = perturbation_covariates_keys + uniq_sample_keys ## 当split_covariate为空的时候先扰动后sample key
+            all_combs_keys = perturbation_covariates_keys + uniq_sample_keys
         if len(self.pheno_covariates) > 0:
             all_combs_pheno_keys = all_combs_keys + pheno_keys
 
-        df = covariate_data[uniq_sample_keys + perturbation_covariates_keys + [self.control_key]].copy() ## 抽取sample，perturbation和control信息
+        df = covariate_data[uniq_sample_keys + perturbation_covariates_keys + [self.control_key]].copy()
         if len(self.pheno_covariates) > 0:
-            df = covariate_data[uniq_sample_keys + perturbation_covariates_keys + pheno_keys + [self.control_key]].copy() ## 抽取sample，perturbation和control信息
+            df = covariate_data[uniq_sample_keys + perturbation_covariates_keys + pheno_keys + [self.control_key]].copy()
 
         cell_idx_key = "cell_index"
         df[cell_idx_key] = df.index
@@ -677,15 +672,15 @@ class DataManager:
             with ProgressBar():
                 control_combs, all_combs, df = dask.compute(control_combs,  all_combs, ddf)
 
-        control_combs = control_combs[control_combs[self.control_key]].sort_values(by=uniq_sample_keys) ## 提取control部分的条件信息（只有sample作为covariate）
+        control_combs = control_combs[control_combs[self.control_key]].sort_values(by=uniq_sample_keys)
         
         ## add pheno information
         if len(self.pheno_covariates) > 0:
-            pheno_combs = pheno_combs.sort_values(by=pheno_keys) ## 提取所有pheno 组别信息
+            pheno_combs = pheno_combs.sort_values(by=pheno_keys)
         ##
 
         all_combs_keys = perturbation_covariates_keys + uniq_sample_keys
-        all_combs = all_combs[~all_combs[self.control_key]].sort_values(by=all_combs_keys) ## 提取所有条件信息 
+        all_combs = all_combs[~all_combs[self.control_key]].sort_values(by=all_combs_keys)
 
         all_combs["global_pert_mask"] = np.arange(len(all_combs), dtype=np.int64)
 
@@ -737,8 +732,6 @@ class DataManager:
         df["perturbation_covariates_mask"] = df["global_pert_mask"]
         df.loc[df[self.control_key], "perturbation_covariates_mask"] = -1
         df["perturbation_covariates_mask"] = df["perturbation_covariates_mask"].astype(np.int64)
-        ## 对于split_covariate_mask中，用-1来mask perturbed case
-        ## 对于perturbation_covariate_mask中，用-1来mask control case
 
         ## TODO: define pheno covariate idcs
         df["pheno_covariate_idcs"] = df["global_pheno"].astype(np.int64)
@@ -810,15 +803,15 @@ class DataManager:
             condition_data[pert_cov] = np.array(emb)
 
         res = ReturnData(
-            split_covariates_mask=split_covariates_mask, ## mask perturbation (-1), 对control 按照donor进行分类 (donor index)
-            split_idx_to_covariates=split_idx_to_covariates, ## donor index mapping 到donor label
-            perturbation_covariates_mask=perturbation_covariates_mask, ## perturb index，保存了perturb的情况, -1代表masking
-            perturbation_idx_to_covariates=perturbation_idx_to_covariates, ## perturbation index mapping到对应的扰动类型
+            split_covariates_mask=split_covariates_mask,
+            split_idx_to_covariates=split_idx_to_covariates,
+            perturbation_covariates_mask=perturbation_covariates_mask,
+            perturbation_idx_to_covariates=perturbation_idx_to_covariates,
             perturbation_idx_to_id=perturbation_idx_to_id,
             condition_data=condition_data,  # type: ignore[arg-type] ## representation
-            control_to_perturbation=control_to_perturbation, ## control index和perturb index的对应关系
+            control_to_perturbation=control_to_perturbation,
             pheno_covariate_idcs = pheno_covariate_idcs,
-            max_combination_length=self._max_combination_length, ## 最大组合数
+            max_combination_length=self._max_combination_length,
         )
         return res
 
