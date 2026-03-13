@@ -44,6 +44,10 @@ class TrainSampler:
         for key, arr in condition_data.items():
             result[key] = np.expand_dims(arr[idx], 0)
         return result
+    
+    def _get_pheno_embeddings(self, cell_idcs: np.ndarray) -> np.ndarray:
+        """Get phenotype embeddings for given cell indices."""
+        return self._data.pheno_data[cell_idcs]
 
     def _sample_from_mask(self, rng, mask) -> np.ndarray:
         """Sample indices according to a mask."""
@@ -83,14 +87,18 @@ class TrainSampler:
         target_batch_idcs = self._sample_from_mask(rng, target_cells_mask)
         target_batch = self._data.cell_data[target_batch_idcs]
 
+        pheno_batch = self._get_pheno_embeddings(target_dist_idx)
+
+
         if not self._has_condition_data:
-            return {"src_cell_data": source_batch, "tgt_cell_data": target_batch}
+            return {"src_cell_data": source_batch, "tgt_cell_data": target_batch, "pheno" : pheno_batch}
         else:
             condition_batch = self._get_embeddings(target_dist_idx, self._data.condition_data)
             return {
                 "src_cell_data": source_batch,
                 "tgt_cell_data": target_batch,
                 "condition": condition_batch,
+                "pheno" : pheno_batch
             }
 
     @property

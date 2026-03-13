@@ -127,7 +127,7 @@ class CellFlowTrainer:
         for it in pbar:
             rng_jax, rng_step_fn = jax.random.split(rng_jax, 2)
             batch = sampler.sample(rng_np)
-            loss = self.solver.step_fn(rng_step_fn, batch)
+            loss, *_ = self.solver.step_fn(rng_step_fn, batch)
             self.training_logs["loss"].append(float(loss))
 
             if ((it - 1) % valid_freq == 0) and (it > 1):

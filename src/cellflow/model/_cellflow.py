@@ -22,6 +22,7 @@ from cellflow.data._dataloader import OOCTrainSampler, PredictionSampler, TrainS
 from cellflow.data._datamanager import DataManager
 from cellflow.model._utils import _write_predictions
 from cellflow.networks import _velocity_field
+from cellflow.networks._base_components import Aggregator, MLP as PhenoMLP
 from cellflow.plotting import _utils
 from cellflow.solvers import _genot, _otfm
 from cellflow.training._callbacks import BaseCallback
@@ -68,6 +69,8 @@ class CellFlow:
         perturbation_covariates: dict[str, Sequence[str]],
         perturbation_covariate_reps: dict[str, str] | None = None,
         sample_covariates: Sequence[str] | None = None,
+        pheno_covariates: Sequence[str] | None = None,
+        pheno_covariate_outcomes: dict[str, str] | None = None,
         sample_covariate_reps: dict[str, str] | None = None,
         split_covariates: Sequence[str] | None = None,
         max_combination_length: int | None = None,
@@ -178,6 +181,8 @@ class CellFlow:
             perturbation_covariates=perturbation_covariates,
             perturbation_covariate_reps=perturbation_covariate_reps,
             sample_covariates=sample_covariates,
+            pheno_covariates = pheno_covariates,
+            pheno_covariate_outcomes=pheno_covariate_outcomes,  # <-- add this line
             sample_covariate_reps=sample_covariate_reps,
             split_covariates=split_covariates,
             max_combination_length=max_combination_length,
@@ -274,6 +279,8 @@ class CellFlow:
         solver_kwargs: dict[str, Any] | None = None,
         layer_norm_before_concatenation: bool = False,
         linear_projection_before_concatenation: bool = False,
+        agg_kwargs: dict[str, Any] | None = None,
+        mlp_kwargs: dict[str, Any] | None = None,
         seed=0,
     ) -> None:
         """Prepare the model for training.
@@ -511,6 +518,26 @@ class CellFlow:
             raise NotImplementedError(f"Solver must be an instance of OTFlowMatching or GENOT, got {type(self.solver)}")
 
         self._trainer = CellFlowTrainer(solver=self.solver, predict_kwargs=self.validation_data["predict_kwargs"])  # type: ignore[arg-type]
+
+        if self._dm.pheno_covariates:
+            _agg_kwargs = agg_kwargs or {}
+            _mlp_kwargs = mlp_kwargs or {}
+            pheno_dim = self.train_data.pheno_data.shape[1]
+            self.agg = Aggregator(**_agg_kwargs)
+            self.mlp = PhenoMLP(n_output=pheno_dim, **_mlp_kwargs)
+            rng_agg, rng_mlp = jax.random.split(jax.random.PRNGKey(seed))
+            dummy_x = jnp.zeros((1, 1, self._data_dim))
+            self.agg_params = self.agg.init(rng_agg, dummy_x)["params"]
+            dummy_emb = self.agg.apply({"params": self.agg_params}, dummy_x)
+            self.mlp_params = self.mlp.init(rng_mlp, dummy_emb, training=False)["params"]
+            self._solver.vf_step_fn = self._solver._get_vf_step_fn(agg=self.agg, mlp=self.mlp)
+            self._solver.agg_params = self.agg_params
+            self._solver.mlp_params = self.mlp_params
+        else:
+            self.agg = None
+            self.mlp = None
+            self.agg_params = None
+            self.mlp_params = None
 
     def train(
         self,
@@ -870,3 +897,4 @@ class CellFlow:
     def condition_mode(self) -> Literal["deterministic", "stochastic"]:
         """The mode of the encoder."""
         return self.velocity_field.condition_mode
+

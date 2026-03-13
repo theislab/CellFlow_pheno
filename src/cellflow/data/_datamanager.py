@@ -161,8 +161,8 @@ class DataManager:
         pheno_data = self._get_pheno_data(adata)
 
         return TrainingData(
-            cell_data=cell_data,
             pheno_data = pheno_data,
+            cell_data = cell_data,
             split_covariates_mask=cond_data.split_covariates_mask,
             split_idx_to_covariates=cond_data.split_idx_to_covariates,
             perturbation_covariates_mask=cond_data.perturbation_covariates_mask,
@@ -275,7 +275,7 @@ class DataManager:
 
         return PredictionData(
             cell_data=cell_data,
-            pheno_data = pheno_data
+            pheno_data = pheno_data,
             split_covariates_mask=split_covariates_mask,
             split_idx_to_covariates=split_idx_to_covariates,
             condition_data=cond_data.condition_data,
@@ -655,10 +655,21 @@ class DataManager:
         )
 
         ## add pheno part
+        """""
+        
         if len(self.pheno_covariates) > 0:
             pheno_combs = ddf[[pheno_keys]].drop_duplicates(
                 keep="first", subset=[pheno_keys]
             )
+        
+        """""
+        if isinstance(pheno_keys, str):
+            pheno_keys = [pheno_keys]
+        else:
+            pheno_keys = list(pheno_keys)
+
+        pheno_combs = ddf[pheno_keys].drop_duplicates(keep="first", subset=pheno_keys)
+
         ##
 
         control_combs = all_combs[uniq_sample_keys + [self.control_key]].drop_duplicates(
@@ -686,7 +697,7 @@ class DataManager:
 
         ## add pheno idx
         if len(self.pheno_covariates) > 0:
-            pheno_combs["global_pheno"] = np.arrange(len(pheno_combs), dtype=np.int64)
+            pheno_combs["global_pheno"] = np.arange(len(pheno_combs), dtype=np.int64)
         ##
 
         control_combs["global_control_mask"] = np.arange(len(control_combs), dtype=np.int64)
@@ -852,7 +863,7 @@ class DataManager:
     def _get_pheno_data(
         self,
         adata: anndata.AnnData
-    ) -> np.ndarry:
+    ) -> np.ndarray:
         pheno_key = self._pheno_covariate_outcomes[self._pheno_covariates[0]]
         pheno_df = pd.DataFrame({
             group: mat.flatten()
@@ -1094,6 +1105,7 @@ class DataManager:
         return OrderedDict(sample_covariate_reps)
 
     def _verify_pheno_covariate_outcomes(
+        self,
         adata: anndata.AnnData,
         pheno_covariate_outcomes: dict[str, str] | None,
         covariates: list[str],
@@ -1318,3 +1330,4 @@ class DataManager:
     def sample_rep(self) -> str | dict[str, str]:
         """Key of the sample representation."""
         return self._sample_rep
+

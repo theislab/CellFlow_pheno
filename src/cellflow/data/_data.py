@@ -26,6 +26,7 @@ class ReturnData:  # TODO: this should rather be a NamedTuple
     condition_data: dict[str, np.ndarray]
     control_to_perturbation: dict[int, np.ndarray]
     max_combination_length: int
+    pheno_covariate_idcs: np.ndarray
 
 
 class BaseDataMixin:
@@ -106,7 +107,7 @@ class TrainingData(BaseDataMixin):
     data_manager
         The data manager
     """
-
+    pheno_data: np.ndarray
     cell_data: np.ndarray  # (n_cells, n_features)
     split_covariates_mask: np.ndarray  # (n_cells,), which cell assigned to which source distribution
     split_idx_to_covariates: dict[int, tuple[Any, ...]]  # (n_sources,) dictionary explaining split_covariates_mask
@@ -120,6 +121,7 @@ class TrainingData(BaseDataMixin):
     max_combination_length: int
     null_value: Any
     data_manager: Any
+
 
 
 @dataclass

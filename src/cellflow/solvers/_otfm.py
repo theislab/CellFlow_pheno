@@ -64,8 +64,10 @@ class OTFlowMatching:
         self.vf_state = self.vf.create_train_state(input_dim=self.vf.output_dims[-1], **kwargs)
         self.vf_state_inference = self.vf.create_train_state(input_dim=self.vf.output_dims[-1], **kwargs)
         self.vf_step_fn = self._get_vf_step_fn()
+        self.agg_params = None
+        self.mlp_params = None
 
-    def _get_vf_step_fn(self) -> Callable:  # type: ignore[type-arg]
+    def _get_vf_step_fn(self, agg=None, mlp=None) -> Callable:  # type: ignore[type-arg]
         @jax.jit
         def vf_step_fn(
             rng: jax.Array,
@@ -75,14 +77,20 @@ class OTFlowMatching:
             target: jnp.ndarray,
             conditions: dict[str, jnp.ndarray],
             encoder_noise: jnp.ndarray,
+            agg_params=None,
+            mlp_params=None,
+            true_pheno=None,
         ):
             def loss_fn(
                 params: jnp.ndarray,
+                agg_params,
+                mlp_params,
                 t: jnp.ndarray,
                 source: jnp.ndarray,
                 target: jnp.ndarray,
                 conditions: dict[str, jnp.ndarray],
                 encoder_noise: jnp.ndarray,
+                true_pheno,
                 rng: jax.Array,
             ) -> jnp.ndarray:
                 rng_flow, rng_encoder, rng_dropout = jax.random.split(rng, 3)
@@ -95,6 +103,7 @@ class OTFlowMatching:
                     encoder_noise=encoder_noise,
                     rngs={"dropout": rng_dropout, "condition_encoder": rng_encoder},
                 )
+
                 u_t = self.probability_path.compute_ut(t, x_t, source, target)
                 flow_matching_loss = jnp.mean((v_t - u_t) ** 2)
                 condition_mean_regularization = 0.5 * jnp.mean(mean_cond**2)
@@ -105,11 +114,23 @@ class OTFlowMatching:
                     encoder_loss = condition_mean_regularization
                 else:
                     encoder_loss = 0.0
-                return flow_matching_loss + encoder_loss
 
-            grad_fn = jax.value_and_grad(loss_fn)
-            loss, grads = grad_fn(vf_state.params, time, source, target, conditions, encoder_noise, rng)
-            return vf_state.apply_gradients(grads=grads), loss
+                if agg is not None and mlp is not None and true_pheno is not None:
+                    pred = self._predict_fn(source, conditions)
+                    emb = agg.apply({"params": agg_params}, pred[None])
+                    pheno_hat = mlp.apply({"params": mlp_params}, emb, training=True, rngs={"dropout": rng_dropout}).squeeze(0)
+                    pheno_loss = jnp.mean((pheno_hat - true_pheno) ** 2)
+                else:
+                    pheno_loss = 0.0
+
+                return flow_matching_loss + encoder_loss + pheno_loss
+
+            grad_fn = jax.value_and_grad(loss_fn, argnums=(0, 1, 2))
+            loss, (vf_grads, agg_grads, mlp_grads) = grad_fn(
+                vf_state.params, agg_params, mlp_params,
+                time, source, target, conditions, encoder_noise, true_pheno, rng,
+            )
+            return vf_state.apply_gradients(grads=vf_grads), loss, agg_grads, mlp_grads
 
         return vf_step_fn
 
@@ -117,7 +138,9 @@ class OTFlowMatching:
         self,
         rng: jnp.ndarray,
         batch: dict[str, ArrayLike],
-    ) -> float:
+        agg_params=None,
+        mlp_params=None,
+    ) -> tuple:
         """Single step function of the solver.
 
         Parameters
@@ -125,15 +148,24 @@ class OTFlowMatching:
         rng
             Random number generator.
         batch
-            Data batch with keys ``src_cell_data``, ``tgt_cell_data``, and
-            optionally ``condition``.
+            Data batch with keys ``src_cell_data``, ``tgt_cell_data``,
+            optionally ``condition``, and optionally ``pheno``.
+        agg_params
+            Parameters of the aggregator network for phenotype prediction.
+        mlp_params
+            Parameters of the MLP for phenotype prediction.
 
         Returns
         -------
-        Loss value.
+        Tuple of ``(loss, agg_grads, mlp_grads)``.
         """
+        if agg_params is None:
+            agg_params = self.agg_params
+        if mlp_params is None:
+            mlp_params = self.mlp_params
         src, tgt = batch["src_cell_data"], batch["tgt_cell_data"]
         condition = batch.get("condition")
+        true_pheno = batch.get("pheno")
         rng_resample, rng_time, rng_step_fn, rng_encoder_noise = jax.random.split(rng, 4)
         n = src.shape[0]
         time = self.time_sampler(rng_time, n)
@@ -145,7 +177,7 @@ class OTFlowMatching:
             src_ixs, tgt_ixs = solver_utils.sample_joint(rng_resample, tmat)
             src, tgt = src[src_ixs], tgt[tgt_ixs]
 
-        self.vf_state, loss = self.vf_step_fn(
+        self.vf_state, loss, agg_grads, mlp_grads = self.vf_step_fn(
             rng_step_fn,
             self.vf_state,
             time,
@@ -153,6 +185,9 @@ class OTFlowMatching:
             tgt,
             condition,
             encoder_noise,
+            agg_params,
+            mlp_params,
+            true_pheno,
         )
 
         if self.ema == 1.0:
@@ -161,7 +196,14 @@ class OTFlowMatching:
             self.vf_state_inference = self.vf_state_inference.replace(
                 params=ema_update(self.vf_state_inference.params, self.vf_state.params, self.ema)
             )
-        return loss
+        return loss, agg_grads, mlp_grads
+    
+    def pheno_loss(self, agg_params, mlp_params, src, cond, true_pheno, agg, mlp):
+        pred      = self.solver.predict_jax(x=src, condition=cond)   
+        emb_aggregated       = agg.apply({"params": agg_params}, pred[None])  
+        pheno_hat = mlp.apply({"params": mlp_params}, emb_aggregated,
+                            training=False).squeeze(0)            
+        return jnp.mean((pheno_hat - true_pheno) ** 2)
 
     def get_condition_embedding(self, condition: dict[str, ArrayLike], return_as_numpy=True) -> ArrayLike:
         """Get learnt embeddings of the conditions.
@@ -285,6 +327,110 @@ class OTFlowMatching:
         else:
             x_pred = self._predict_jit(x, condition, rng, **kwargs)
             return np.array(x_pred)
+
+
+
+    def _predict_fn(
+        self, x: ArrayLike, condition: dict[str, ArrayLike], rng: jax.Array | None = None, **kwargs: Any
+    ) -> ArrayLike:
+        """Like :meth:`_predict_jit` but without an internal ``jax.jit``, so gradients flow through the output."""
+        kwargs.setdefault("dt0", None)
+        kwargs.setdefault("solver", diffrax.Tsit5())
+        kwargs.setdefault("stepsize_controller", diffrax.PIDController(rtol=1e-5, atol=1e-5))
+        kwargs = frozen_dict.freeze(kwargs)
+
+        noise_dim = (1, self.vf.condition_embedding_dim)
+        use_mean = rng is None or self.condition_encoder_mode == "deterministic"
+        rng = utils.default_prng_key(rng)
+        encoder_noise = jnp.zeros(noise_dim) if use_mean else jax.random.normal(rng, noise_dim)
+
+        def vf(t: jnp.ndarray, x: jnp.ndarray, args: tuple[dict[str, jnp.ndarray], jnp.ndarray]) -> jnp.ndarray:
+            params = self.vf_state_inference.params
+            condition, encoder_noise = args
+            return self.vf_state_inference.apply_fn({"params": params}, t, x, condition, encoder_noise, train=False)[0]
+
+        def solve_ode(x: jnp.ndarray, condition: dict[str, jnp.ndarray], encoder_noise: jnp.ndarray) -> jnp.ndarray:
+            ode_term = diffrax.ODETerm(vf)
+            result = diffrax.diffeqsolve(
+                ode_term,
+                t0=0.0,
+                t1=1.0,
+                y0=x,
+                args=(condition, encoder_noise),
+                **kwargs,
+            )
+            return result.ys[0]
+
+        return jax.vmap(solve_ode, in_axes=[0, None, None])(x, condition, encoder_noise)
+
+    def predict_jax(
+        self,
+        x: ArrayLike | dict[str, ArrayLike],
+        condition: dict[str, ArrayLike] | dict[str, dict[str, ArrayLike]],
+        rng: jax.Array | None = None,
+        batched: bool = False,
+        **kwargs: Any,
+    ) -> ArrayLike | dict[str, ArrayLike]:
+        """Predict the translated source ``x`` under condition ``condition``.
+
+        This function solves the ODE learnt with
+        the :class:`~cellflow.networks.ConditionalVelocityField`.
+        Unlike :meth:`predict`, the output is a JAX array with a live gradient
+        tape, so callers can differentiate through it with :func:`jax.grad`.
+
+        Parameters
+        ----------
+        x
+            A dictionary with keys indicating the name of the condition and values containing
+            the input data as arrays. If ``batched=False`` provide an array of shape [batch_size, ...].
+        condition
+            A dictionary with keys indicating the name of the condition and values containing
+            the condition of input data as arrays. If ``batched=False`` provide an array of shape
+            [batch_size, ...].
+        rng
+            Random number generator to sample from the latent distribution,
+            only used if ``condition_mode='stochastic'``. If :obj:`None`, the
+            mean embedding is used.
+        batched
+            Whether to use batched prediction. This is only supported if the input has
+            the same number of cells for each condition. For example, this works when using
+            :class:`~cellflow.data.ValidationSampler` to sample the validation data.
+        kwargs
+            Keyword arguments for :func:`diffrax.diffeqsolve`.
+
+        Returns
+        -------
+        The push-forward distribution of ``x`` under condition ``condition`` as a
+        JAX array. Wrap the call in :func:`jax.jit` for compiled execution.
+        """
+        if batched and not x:
+            return {}
+
+        if batched:
+            keys = sorted(x.keys())
+            condition_keys = sorted(set().union(*(condition[k].keys() for k in keys)))
+            _predict_fn = lambda x, condition: self._predict_fn(x, condition, rng, **kwargs)
+            batched_predict = jax.vmap(_predict_fn, in_axes=(0, dict.fromkeys(condition_keys, 0)))
+            # assert that the number of cells is the same for each condition
+            n_cells = x[keys[0]].shape[0]
+            for k in keys:
+                assert x[k].shape[0] == n_cells, "The number of cells must be the same for each condition"
+            src_inputs = jnp.stack([x[k] for k in keys], axis=0)
+            batched_conditions = {}
+            for cond_key in condition_keys:
+                batched_conditions[cond_key] = jnp.stack([condition[k][cond_key] for k in keys])
+
+            pred_targets = batched_predict(src_inputs, batched_conditions)
+            return {k: pred_targets[i] for i, k in enumerate(keys)}
+        elif isinstance(x, dict):
+            return jax.tree.map(
+                partial(self._predict_fn, rng=rng, **kwargs),
+                x,
+                condition,  # type: ignore[attr-defined]
+            )
+        else:
+            return self._predict_fn(x, condition, rng, **kwargs)
+
 
     @property
     def is_trained(self) -> bool:
